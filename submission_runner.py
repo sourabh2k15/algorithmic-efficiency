@@ -21,6 +21,8 @@ import json
 import os
 import struct
 import time
+import gc
+
 from typing import Any, Dict, Optional, Tuple
 
 from absl import app
@@ -453,7 +455,9 @@ def train_once(
                   save_intermediate_checkpoints=FLAGS
                   .save_intermediate_checkpoints)
 
-          if USE_PYTORCH_DDP:
+          if FLAGS.framework == 'pytorch':
+            torch._C._cuda_clearCublasWorkspaces()
+            gc.collect()
             torch.cuda.empty_cache()
           logging_end_time = get_time()
 
