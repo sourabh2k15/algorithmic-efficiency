@@ -128,7 +128,8 @@ def update_params(workload: spec.Workload,
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return 262_144
+    # return 262_144
+    return 131_072
   elif workload_name == 'fastmri':
     return 32
   elif workload_name == 'imagenet_resnet':
