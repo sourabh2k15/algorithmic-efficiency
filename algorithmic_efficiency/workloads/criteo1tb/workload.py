@@ -135,4 +135,5 @@ class BaseCriteo1TbDlrmSmallWorkload(spec.Workload):
       dist.all_reduce(loss)
     mean_loss = loss.item() / num_examples
     del self._eval_iters
+    self._eval_iters = {}
     return {'loss': mean_loss}
