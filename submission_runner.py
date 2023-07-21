@@ -22,6 +22,7 @@ import os
 import struct
 import time
 import gc
+import torch._dynamo
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -457,6 +458,7 @@ def train_once(
 
           if FLAGS.framework == 'pytorch':
             torch._C._cuda_clearCublasWorkspaces()
+            torch._dynamo.reset()
             gc.collect()
             torch.cuda.empty_cache()
           logging_end_time = get_time()
