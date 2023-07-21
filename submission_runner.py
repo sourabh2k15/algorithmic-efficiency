@@ -457,6 +457,7 @@ def train_once(
                   .save_intermediate_checkpoints)
 
           if FLAGS.framework == 'pytorch':
+            print("hu")
             torch._C._cuda_clearCublasWorkspaces()
             torch._dynamo.reset()
             gc.collect()
