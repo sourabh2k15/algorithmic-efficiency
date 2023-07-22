@@ -460,9 +460,9 @@ def train_once(
 
           if FLAGS.framework == 'pytorch':
             # print("hu")
-            # torch._C._cuda_clearCublasWorkspaces()
-            # torch._dynamo.reset()
-            # gc.collect()
+            torch._C._cuda_clearCublasWorkspaces()
+            torch._dynamo.reset()
+            gc.collect()
             torch.cuda.empty_cache()
           logging_end_time = get_time()
 
