@@ -285,8 +285,8 @@ def train_once(
     model_params, model_state = workload.init_model_fn(
         model_init_rng, dropout_rate, aux_dropout_rate)
     if FLAGS.framework == 'pytorch' and FLAGS.torch_compile:
-      # model_params = torch.compile(model_params, backend="eager")
-      model_params = torch.compile(model_params, backend="aot_eager")
+      model_params = torch.compile(model_params, backend="eager")
+      # model_params = torch.compile(model_params, backend="aot_eager")
       # model_params = torch.compile(model_params, backend="inductor")
   logging.info('Initializing optimizer.')
   with profiler.profile('Initializing optimizer'):
