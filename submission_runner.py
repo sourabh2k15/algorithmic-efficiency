@@ -11,7 +11,7 @@ python3 submission_runner.py \
     --tuning_search_space=reference_algorithms/development_algorithms/mnist/tuning_search_space.json \
     --num_tuning_trials=3 \
     --experiment_dir=/home/znado/experiment_dir \
-    --experiment_name=baseline 
+    --experiment_name=baseline
 """
 
 import datetime
@@ -31,7 +31,7 @@ import tensorflow as tf
 import torch
 import torch._dynamo
 import torch.distributed as dist
-
+import gc
 from algorithmic_efficiency import checkpoint_utils
 from algorithmic_efficiency import halton
 from algorithmic_efficiency import logger_utils
@@ -48,7 +48,7 @@ from algorithmic_efficiency.pytorch_utils import sync_ddp_time
 tf.config.set_visible_devices([], 'GPU')
 
 # disable only for deepspeech if it works fine for other workloads.
-os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=false"
+os.environ['XLA_FLAGS'] = '--xla_gpu_enable_triton_gemm=false'
 
 # TODO(znado): make a nicer registry of workloads that lookup in.
 BASE_WORKLOADS_DIR = 'algorithmic_efficiency/workloads/'
@@ -133,7 +133,7 @@ flags.DEFINE_enum(
     'other things if the Jax or Numpy RNG library is used for RNG.')
 flags.DEFINE_boolean(
     'torch_compile',
-    False,
+    True,
     'Whether to use `torch.compile` to JIT-compile PyTorch code. '
     'This will only take effect when `framework`==pytorch.')
 
@@ -283,7 +283,29 @@ def train_once(
     model_params, model_state = workload.init_model_fn(
         model_init_rng, dropout_rate, aux_dropout_rate)
     if FLAGS.framework == 'pytorch' and FLAGS.torch_compile:
-      model_params = torch.compile(model_params)
+      compile_error_workloads = [
+          'fastmri', 'ogbg', 'librispeech_deepspeech', 'wmt'
+      ]
+      eager_backend_workloads = ['librispeech_conformer']
+      aot_eager_backend_workloads = ['criteo1tb']
+      if FLAGS.workload in compile_error_workloads:
+        logging.warning(
+            'These workloads cannot be fully compiled under current '
+            'PyTorch version. Proceeding without `torch.compile`.')
+      elif FLAGS.workload in eager_backend_workloads:
+        logging.warning(
+            'These workloads cannot be fully compiled under current '
+            'PyTorch version. Proceeding with `backend=eager`.')
+        model_params = torch.compile(model_params, backend='eager')
+      elif FLAGS.workload in aot_eager_backend_workloads:
+        logging.warning(
+            'These workloads cannot be fully compiled under current '
+            'PyTorch version. Proceeding with `backend=aot_eager`.')
+        model_params = torch.compile(model_params, backend='aot_eager')
+      else:
+        logging.info('Performing `torch.compile`.')
+        model_params = torch.compile(model_params)
+
   logging.info('Initializing optimizer.')
   with profiler.profile('Initializing optimizer'):
     optimizer_state = init_optimizer_state(workload,
@@ -454,10 +476,11 @@ def train_once(
                   save_intermediate_checkpoints=FLAGS
                   .save_intermediate_checkpoints)
 
-          if USE_PYTORCH_DDP:
+          if FLAGS.framework == 'pytorch' and torch.cuda.is_available():
             torch._C._cuda_clearCublasWorkspaces()
             torch._dynamo.reset()
             torch.cuda.empty_cache()
+            gc.collect()
           logging_end_time = get_time()
 
           train_state['accumulated_logging_time'] += (
@@ -630,7 +653,7 @@ def main(_):
 
   # Prevent OOM on librispeech conformer.
   if FLAGS.workload == 'librispeech_conformer':
-    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.85"
+    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.85'
 
   # Extend path according to framework.
   workload_metadata['workload_path'] = os.path.join(
