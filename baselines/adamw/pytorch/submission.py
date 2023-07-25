@@ -121,6 +121,8 @@ def update_params(workload: spec.Workload,
                  global_step,
                  loss.item(),
                  grad_norm.item())
+    del parameters
+    del grad_norm
 
   return (optimizer_state, current_param_container, new_model_state)
 
