@@ -454,6 +454,8 @@ def train_once(
                   .save_intermediate_checkpoints)
 
           if USE_PYTORCH_DDP:
+            torch._C._cuda_clearCublasWorkspaces()
+            torch._dynamo.reset()
             torch.cuda.empty_cache()
           logging_end_time = get_time()
 
