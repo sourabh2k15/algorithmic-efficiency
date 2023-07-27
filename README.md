@@ -112,7 +112,7 @@ See instructions [here](https://github.com/NVIDIA/nvidia-docker).
 
 
 ### Running Docker Container (Interactive)
-To use the Docker container as an interactive virtual environment, you can run a container mounted to your local data and code directories and execute the `bash` program. This may be useful if you are in the process of developing a submission.
+To use the Docker container as an interactive virtual environment, you can run a container with your local data and code directories mounted and execute the `bash` program. This may be useful if you are in the process of developing a submission.
 1. Run detached Docker Container
    ```bash
    docker run -t -d \
