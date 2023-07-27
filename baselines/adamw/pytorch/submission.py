@@ -32,7 +32,8 @@ def init_optimizer_state(workload: spec.Workload,
               betas=(1.0 - hyperparameters.one_minus_beta1,
                      hyperparameters.beta2),
               eps=1e-8,
-              weight_decay=hyperparameters.weight_decay),
+              weight_decay=hyperparameters.weight_decay,
+              fused=False),
   }
 
   def pytorch_cosine_warmup(step_hint: int, hyperparameters, optimizer):
@@ -70,6 +71,8 @@ def update_params(workload: spec.Workload,
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
 
+  print("BATCH")
+  print(batch)
   logits_batch, new_model_state = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch=batch,
