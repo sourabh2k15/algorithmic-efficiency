@@ -214,7 +214,7 @@ def train_once(
       #   logging.info('Performing `torch.compile`.')
       #   model_params = torch.compile(model_params)
 
-      model_params = torch.compile(model_params, fullgraph=True)
+      model_params = torch.compile(model_params, fullgraph=False, mode='max-autotune')
 
   logging.info('Initializing optimizer.')
   with profiler.profile('Initializing optimizer'):
