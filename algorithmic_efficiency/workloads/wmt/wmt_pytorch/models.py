@@ -52,6 +52,7 @@ def make_causal_mask(x: Tensor,
 
 def make_src_mask(src, inputs_segmentation, nhead):
   """Utility for creating src mask and adjust it for PyTorch Transformer API."""
+  src = src.detach()
   src_mask = make_attention_mask(src > 0, src > 0)
   # Add segmentation block-diagonal attention mask if using segmented data.
   if inputs_segmentation is not None:
