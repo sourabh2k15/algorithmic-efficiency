@@ -71,8 +71,8 @@ def update_params(workload: spec.Workload,
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
 
-  print("BATCH")
-  print(batch)
+  # print("BATCH")
+  # print(batch)
   logits_batch, new_model_state = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch=batch,
