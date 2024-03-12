@@ -303,10 +303,12 @@ def download_criteo1tb(data_dir,
       logging.info(f'Skipping download to {all_days_zip_filepath}')
       download = False
 
+  total_size = int(download_request.headers.get("content-length", 0))
+
   if download:
     with open(all_days_zip_filepath, 'wb') as f:
-      for chunk in download_request.iter_content(chunk_size=1024):
-        f.write(chunk)
+        for chunk in tqdm.tqdm(download_request.iter_content(chunk_size=1024*1024), total=(total_size / (1024*1024))):
+          f.write(chunk)
 
   unzip_cmd = f'unzip {all_days_zip_filepath} -d {tmp_criteo_dir}'
   logging.info(f'Running Criteo 1TB unzip command:\n{unzip_cmd}')
