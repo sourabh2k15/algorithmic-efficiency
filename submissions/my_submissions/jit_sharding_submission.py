@@ -279,6 +279,7 @@ def init_optimizer_state(workload: spec.Workload,
   return optimizer_state, opt_update_fn
 
 
+@functools.partial(jax.jit, static_argnums=(0, 1, 7))
 def train_step(
   workload,
   opt_update_fn,
@@ -350,14 +351,9 @@ def update_params(workload: spec.Workload,
   else:
     label_smoothing = 0.0
 
-  partial_train_step = functools.partial(
-    train_step, 
-    workload=workload, 
-    opt_update_fn=opt_update_fn, 
-    label_smoothing=label_smoothing)
-
-  jitted_train_step = jax.jit(
-    partial_train_step)
+  # partial_train_step = functools.partial(
+  #   train_step, 
+  #   )
 
 
   current_param_container = jax_utils.unreplicate(current_param_container)
@@ -380,7 +376,10 @@ def update_params(workload: spec.Workload,
     current_param_container, 
     model_state, 
     loss, 
-    grad_norm) = jitted_train_step( # pylint: disable=line-too-long
+    grad_norm) = train_step( # pylint: disable=line-too-long
+      workload=workload, 
+      opt_update_fn=opt_update_fn, 
+      label_smoothing=label_smoothing,
         model_state=model_state, 
         optimizer_state=optimizer_state,
         current_param_container=current_param_container, 
