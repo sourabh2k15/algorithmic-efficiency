@@ -15,11 +15,14 @@ import optax
 import functools
 import flax
 import flax.linen as nn
+import copy
 
 from jax.sharding import PartitionSpec as P
 from jax.experimental import mesh_utils
 
 import numpy as np
+
+# jax.config.update('jax_log_compiles', True)
 
 NamedSharding = jax.sharding.NamedSharding 
 
@@ -28,7 +31,7 @@ mesh = mesh_utils.create_device_mesh(
     mesh_shape, devices=jax.devices()
 )
 mesh = jax.sharding.Mesh(mesh, axis_names=('data',))
-p = NamedSharding(mesh, P('data'))
+p = NamedSharding(mesh, P(None, 'data'))
 
 print(mesh)
 
@@ -68,6 +71,20 @@ def shard_array(arr):
   shard_array_fn = get_shard_array_fn(p)
   return shard_array_fn(arr)
 
+def get_sharding(x, y):
+  if len(x.shape) == 1:
+    return NamedSharding(mesh, P(None))
+  else:
+    if x.shape[0] % 8 == 0:
+      if x.shape[1] % 8 == 0:
+        return NamedSharding(mesh, P('data',))
+      else:
+        return NamedSharding(mesh, P('data', None))
+    else:
+      if x.shape[1] % 8 == 0:
+        return NamedSharding(mesh, P(None, 'data'))
+      else:
+        return NamedSharding(mesh, P(None))
 
 class ScaleByAdapropState(NamedTuple):
   """State for the AdaProp algorithm."""
@@ -107,32 +124,32 @@ def scale_by_adaprop(
 
   sharding_map = {}
 
-  def init_fn(params):
-    prev_params = jax.tree_map(
-        lambda p: jnp.zeros_like(p, dtype=dtype), params
-    )
-    mu = jax.tree_map(
-        lambda p: jnp.zeros_like(p, dtype=dtype), params
-    )
-    nu = jax.tree_map(
-        lambda p: jnp.zeros_like(p, dtype=dtype), params
-    )
-    gain = jax.tree_map(
-        lambda p: jnp.zeros_like(p, dtype=dtype), params
-    )
 
-    prev_params, prev_params_sharding = shard_pytree(prev_params)
-    mu, mu_sharding = shard_pytree(mu)
-    nu, nu_sharding = shard_pytree(nu)
-    gain, gain_sharding = shard_pytree(gain)
+  def init_fn(params):    
+    pytree_sharding = nn.get_sharding(params, mesh)
 
-    sharding_map['mu'] = mu_sharding
-    sharding_map['nu'] = nu_sharding
-    sharding_map['gain'] = gain_sharding
-    sharding_map['pp'] = prev_params_sharding
-    
-    # print(sharding_map['pp'])
+    def zeros_like_params(params):
+      return jax.tree_map(
+          lambda p: jnp.zeros_like(p, dtype=dtype), params)
 
+
+    pytree_sharding = jax.tree_util.tree_map(
+      lambda x, y: get_sharding(x, y),
+      params, pytree_sharding)
+
+    jitted_init = jax.jit(zeros_like_params, out_shardings=pytree_sharding)
+
+    prev_params = jitted_init(params)
+    mu = jitted_init(params)
+    nu = jitted_init(params)
+    gain = jitted_init(params)
+
+    # gain = jax.tree_util.tree_map(lambda x: x.astype(jnp.float16), gain)
+
+    sharding_map['mu'] = pytree_sharding
+    sharding_map['nu'] = pytree_sharding
+    sharding_map['gain'] = pytree_sharding
+    sharding_map['pp'] = pytree_sharding
 
     return ScaleByAdapropState(
         count=jnp.zeros([], jnp.int32),
@@ -180,6 +197,7 @@ def scale_by_adaprop(
     )
     new_updates = jax.tree_map(lambda b, w: b * w,
                                bet_factor, wealth)
+    # gain = jax.tree_util.tree_map(lambda x: x.astype(jnp.float16), gain)
     return new_updates, ScaleByAdapropState(
         count=new_count,
         pp=pp,
@@ -278,8 +296,7 @@ def init_optimizer_state(workload: spec.Workload,
 
   return optimizer_state, opt_update_fn
 
-
-@functools.partial(jax.jit, static_argnums=(0, 1, 7))
+@functools.partial(jax.jit, donate_argnums=(3, 4), static_argnums=(0, 1, 7))
 def train_step(
   workload,
   opt_update_fn,
@@ -327,6 +344,9 @@ def train_step(
   
   return optimizer_state, current_param_container, new_model_state, loss, grad_norm
 
+def replicate_params(params):
+  replicated_params = jax.tree_util.tree_map(lambda x: x, params)
+  return replicated_params
 
 def update_params(workload: spec.Workload,
                   current_param_container: spec.ParameterContainer,
@@ -351,26 +371,25 @@ def update_params(workload: spec.Workload,
   else:
     label_smoothing = 0.0
 
-  # partial_train_step = functools.partial(
-  #   train_step, 
-  #   )
-
-
-  current_param_container = jax_utils.unreplicate(current_param_container)
-  current_param_container = replicate_pytree(current_param_container)
+  current_param_container = jax.device_get(current_param_container)
+  current_param_container = jax.tree_util.tree_map(lambda x: x[0], current_param_container)
     
-  if global_step == 0:
-    print('optimizer state pp sharding = ')
-    jax.debug.visualize_array_sharding(optimizer_state[0].pp['shared_embedding']['embedding'])
 
-    print('params sharding = ')
+  pytree_sharding = nn.get_sharding(current_param_container, mesh)
+  param_shapes = jax.tree_util.tree_map(lambda x: x.shape, current_param_container)
 
-    print(current_param_container['shared_embedding']['embedding'].shape)
-    jax.debug.visualize_array_sharding(current_param_container['shared_embedding']['embedding'])
+  current_param_container = jax.jit(replicate_params, out_shardings=pytree_sharding)(current_param_container)
 
-    print('batch input sharding = ')
-    jax.debug.visualize_array_sharding(batch['inputs'])
+  # print(current_param_container['Dense_0']['kernel'].shape)
+  # jax.debug.visualize_array_sharding(current_param_container['Dense_0']['kernel'])
 
+  # print(current_param_container['shared_embedding']['embedding'].shape)
+  # jax.debug.visualize_array_sharding(current_param_container['shared_embedding']['embedding'])
+
+  # print('params sharding = ')
+
+  # print('batch input sharding = ')
+  # jax.debug.visualize_array_sharding(batch['inputs'])
 
   (optimizer_state, 
     current_param_container, 
@@ -385,11 +404,9 @@ def update_params(workload: spec.Workload,
         current_param_container=current_param_container, 
         batch=batch, 
         rng=rng)
-
+  
+  current_param_container = jax.device_get(current_param_container)
   current_param_container = jax_utils.replicate(current_param_container)
-
-  # print('loss = ', loss)
-  # print('grad norm = ', grad_norm)
 
   # Log loss, grad_norm.
   if ((global_step <= 100 or global_step % 500 == 0) and
@@ -454,11 +471,12 @@ def data_selection(workload: spec.Workload,
   del global_step
   del rng
   batch = next(input_queue)
-  
-  # Shard batch correctly 
+
+  # Shard batch correctly
+
   for key in batch.keys():
     array_shape = batch[key].shape
-    sharded_array = jax.jit(lambda x: x, out_shardings=p)(batch[key].reshape(
+    sharded_array = jax.jit(lambda x: x, out_shardings=NamedSharding(mesh, P('data', None)))(batch[key].reshape(
       array_shape[0] * array_shape[1], -1
     ))
 
