@@ -83,7 +83,7 @@ flags.DEFINE_integer('num_tuning_trials',
                      'The number of external hyperparameter trials to run.')
 flags.DEFINE_string('data_dir', '~/data', 'Dataset location.')
 flags.DEFINE_string('imagenet_v2_data_dir',
-                    None,
+                    '~/data',
                     'Dataset location for ImageNet-v2.')
 flags.DEFINE_string('librispeech_tokenizer_vocab_path',
                     '',
@@ -109,11 +109,6 @@ flags.DEFINE_string(
     'an absolute path rather than a relative path.')
 flags.DEFINE_string('experiment_name', None, 'Name of the experiment.')
 flags.DEFINE_boolean(
-    'save_checkpoints',
-    True,
-    'Whether or not to save checkpoints of the model and optimizer '
-    'at every eval and after training.')
-flags.DEFINE_boolean(
     'save_intermediate_checkpoints',
     True,
     'Whether to save any intermediate checkpoints. '
@@ -138,6 +133,9 @@ flags.DEFINE_boolean(
     False,
     'Whether to overwrite the experiment with identical experiment_dir and'
     'experiment_name.')
+flags.DEFINE_boolean('save_checkpoints',
+                     True,
+                     'Whether or not to checkpoint the model at every eval.')
 flags.DEFINE_integer(
     'hparam_start_index',
     None,
@@ -145,7 +143,7 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     'hparam_end_index',
     None,
-    'End index to slice set of hyperparameters in tuning search space.')
+    'End index to slice set of hyperparameters in tuning spearch space.')
 flags.DEFINE_integer(
     'rng_seed',
     None,
@@ -154,12 +152,6 @@ flags.DEFINE_integer(
 flags.DEFINE_boolean('set_pytorch_max_split_size',
                      False,
                      'If true, set pytorch max_split_size_mb to 256')
-flags.DEFINE_integer(
-    'pytorch_eval_num_workers',
-    0,
-    'Number of workers for ImageNet PyTorch evaluation data loaders.'
-    'WARNING: Setting pytorch_eval_num_workers != 0, will result '
-    'in incorrect evals currently, see issues/732.')
 FLAGS = flags.FLAGS
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_setup()
 
@@ -208,15 +200,10 @@ def train_once(
     log_dir: Optional[str] = None,
     save_checkpoints: Optional[bool] = True
 ) -> Tuple[spec.Timing, Dict[str, Any]]:
-  _reset_cuda_mem()
   data_rng, opt_init_rng, model_init_rng, rng = prng.split(rng, 4)
 
   # Workload setup.
   logging.info('Initializing dataset.')
-  if hasattr(workload, '_eval_num_workers'):
-    # Set the number of workers for PyTorch evaluation data loaders
-    # (not all workloads have them).
-    workload.eval_num_workers = FLAGS.pytorch_eval_num_workers
   with profiler.profile('Initializing dataset'):
     input_queue = workload._build_input_queue(
         data_rng,
@@ -375,96 +362,96 @@ def train_once(
     train_state['is_time_remaining'] = (
         train_state['accumulated_submission_time'] < max_allowed_runtime_sec)
     # Check if submission is eligible for an untimed eval.
-    if ((train_step_end_time - train_state['last_eval_time']) >=
-        workload.eval_period_time_sec or train_state['training_complete']):
-      with profiler.profile('Evaluation'):
-        del batch
-        _reset_cuda_mem()
+    # if ((train_step_end_time - train_state['last_eval_time']) >=
+    #     workload.eval_period_time_sec or train_state['training_complete']):
+    #   with profiler.profile('Evaluation'):
+    #     del batch
+    #     _reset_cuda_mem()
 
-        try:
-          eval_start_time = get_time()
-          latest_eval_result = workload.eval_model(global_eval_batch_size,
-                                                   model_params,
-                                                   model_state,
-                                                   eval_rng,
-                                                   data_dir,
-                                                   imagenet_v2_data_dir,
-                                                   global_step)
-          # Check if targets reached.
-          # Note that this is one of the stopping conditions for the length of
-          # a training run. To score the run we only consider the time
-          # to validation target retrospectively.
-          train_state['validation_goal_reached'] = (
-              workload.has_reached_validation_target(latest_eval_result) or
-              train_state['validation_goal_reached'])
-          train_state['test_goal_reached'] = (
-              workload.has_reached_test_target(latest_eval_result) or
-              train_state['test_goal_reached'])
-          goals_reached = (
-              train_state['validation_goal_reached'] and
-              train_state['test_goal_reached'])
-          # Save last eval time.
-          eval_end_time = get_time()
-          train_state['last_eval_time'] = eval_end_time
+    #     try:
+    #       eval_start_time = get_time()
+    #       latest_eval_result = workload.eval_model(global_eval_batch_size,
+    #                                                model_params,
+    #                                                model_state,
+    #                                                eval_rng,
+    #                                                data_dir,
+    #                                                imagenet_v2_data_dir,
+    #                                                global_step)
+    #       # Check if targets reached.
+    #       # Note that this is one of the stopping conditions for the length of
+    #       # a training run. To score the run we only consider the time
+    #       # to validation target retrospectively.
+    #       train_state['validation_goal_reached'] = (
+    #           workload.has_reached_validation_target(latest_eval_result) or
+    #           train_state['validation_goal_reached'])
+    #       train_state['test_goal_reached'] = (
+    #           workload.has_reached_test_target(latest_eval_result) or
+    #           train_state['test_goal_reached'])
+    #       goals_reached = (
+    #           train_state['validation_goal_reached'] and
+    #           train_state['test_goal_reached'])
+    #       # Save last eval time.
+    #       eval_end_time = get_time()
+    #       train_state['last_eval_time'] = eval_end_time
 
-          # Accumulate eval time.
-          train_state[
-              'accumulated_eval_time'] += eval_end_time - eval_start_time
+    #       # Accumulate eval time.
+    #       train_state[
+    #           'accumulated_eval_time'] += eval_end_time - eval_start_time
 
-          # Add times to eval results for logging.
-          latest_eval_result['score'] = (
-              train_state['accumulated_submission_time'])
-          latest_eval_result[
-              'total_duration'] = eval_end_time - global_start_time
-          latest_eval_result['accumulated_submission_time'] = train_state[
-              'accumulated_submission_time']
-          latest_eval_result['accumulated_eval_time'] = train_state[
-              'accumulated_eval_time']
-          latest_eval_result['accumulated_logging_time'] = train_state[
-              'accumulated_logging_time']
-          time_since_start = latest_eval_result['total_duration']
-          logging.info(f'Time since start: {time_since_start:.2f}s, '
-                       f'\tStep: {global_step}, \t{latest_eval_result}')
-          eval_results.append((global_step, latest_eval_result))
+    #       # Add times to eval results for logging.
+    #       latest_eval_result['score'] = (
+    #           train_state['accumulated_submission_time'])
+    #       latest_eval_result[
+    #           'total_duration'] = eval_end_time - global_start_time
+    #       latest_eval_result['accumulated_submission_time'] = train_state[
+    #           'accumulated_submission_time']
+    #       latest_eval_result['accumulated_eval_time'] = train_state[
+    #           'accumulated_eval_time']
+    #       latest_eval_result['accumulated_logging_time'] = train_state[
+    #           'accumulated_logging_time']
+    #       time_since_start = latest_eval_result['total_duration']
+    #       logging.info(f'Time since start: {time_since_start:.2f}s, '
+    #                    f'\tStep: {global_step}, \t{latest_eval_result}')
+    #       eval_results.append((global_step, latest_eval_result))
 
-          logging_start_time = get_time()
+    #       logging_start_time = get_time()
 
-          if log_dir is not None:
-            metrics_logger.append_scalar_metrics(
-                latest_eval_result,
-                global_step=global_step,
-                preemption_count=preemption_count,
-                is_eval=True,
-            )
-            if save_checkpoints:
-              checkpoint_utils.save_checkpoint(
-                  framework=FLAGS.framework,
-                  optimizer_state=optimizer_state,
-                  model_params=model_params,
-                  model_state=model_state,
-                  train_state=train_state,
-                  eval_results=eval_results,
-                  global_step=global_step,
-                  preemption_count=preemption_count,
-                  checkpoint_dir=log_dir,
-                  save_intermediate_checkpoints=FLAGS
-                  .save_intermediate_checkpoints)
+    #       if log_dir is not None:
+    #         metrics_logger.append_scalar_metrics(
+    #             latest_eval_result,
+    #             global_step=global_step,
+    #             preemption_count=preemption_count,
+    #             is_eval=True,
+    #         )
+    #         if save_checkpoints:
+    #           checkpoint_utils.save_checkpoint(
+    #               framework=FLAGS.framework,
+    #               optimizer_state=optimizer_state,
+    #               model_params=model_params,
+    #               model_state=model_state,
+    #               train_state=train_state,
+    #               eval_results=eval_results,
+    #               global_step=global_step,
+    #               preemption_count=preemption_count,
+    #               checkpoint_dir=log_dir,
+    #               save_intermediate_checkpoints=FLAGS
+    #               .save_intermediate_checkpoints)
 
-          logging_end_time = get_time()
-          train_state['accumulated_logging_time'] += (
-              logging_end_time - logging_start_time)
+    #       logging_end_time = get_time()
+    #       train_state['accumulated_logging_time'] += (
+    #           logging_end_time - logging_start_time)
 
-          _reset_cuda_mem()
+    #       _reset_cuda_mem()
 
-        except RuntimeError as e:
-          logging.exception(f'Eval step {global_step} error.\n')
-          if 'out of memory' in str(e):
-            logging.warning('Error: GPU out of memory during eval during step '
-                            f'{global_step}, error : {str(e)}.')
-            _reset_cuda_mem()
+    #     except RuntimeError as e:
+    #       logging.exception(f'Eval step {global_step} error.\n')
+    #       if 'out of memory' in str(e):
+    #         logging.warning('Error: GPU out of memory during eval during step '
+    #                         f'{global_step}, error : {str(e)}.')
+    #         _reset_cuda_mem()
 
-    train_state['last_step_end_time'] = get_time()
-
+    # train_state['last_step_end_time'] = get_time()
+  eval_results = {}
   metrics = {'eval_results': eval_results, 'global_step': global_step}
 
   if log_dir is not None:
@@ -473,18 +460,17 @@ def train_once(
         global_step=global_step,
         preemption_count=preemption_count)
     metrics_logger.finish()
-    if save_checkpoints:
-      checkpoint_utils.save_checkpoint(
-          framework=FLAGS.framework,
-          optimizer_state=optimizer_state,
-          model_params=model_params,
-          model_state=model_state,
-          train_state=train_state,
-          eval_results=eval_results,
-          global_step=global_step,
-          preemption_count=preemption_count,
-          checkpoint_dir=log_dir,
-          save_intermediate_checkpoints=FLAGS.save_intermediate_checkpoints)
+    checkpoint_utils.save_checkpoint(
+        framework=FLAGS.framework,
+        optimizer_state=optimizer_state,
+        model_params=model_params,
+        model_state=model_state,
+        train_state=train_state,
+        eval_results=eval_results,
+        global_step=global_step,
+        preemption_count=preemption_count,
+        checkpoint_dir=log_dir,
+        save_intermediate_checkpoints=FLAGS.save_intermediate_checkpoints)
 
   return train_state['accumulated_submission_time'], metrics
 
@@ -550,8 +536,8 @@ def score_submission_on_workload(workload: spec.Workload,
     with open(tuning_search_space, 'r', encoding='UTF-8') as search_space_file:
       tuning_search_space = halton.generate_search(
           json.load(search_space_file), num_tuning_trials)
-    all_timings = {}
-    all_metrics = {}
+    all_timings = []
+    all_metrics = []
     tuning_search_space_iter = itertools.islice(
         enumerate(tuning_search_space), hparam_start_index, hparam_end_index)
     for hi, hyperparameters in tuning_search_space_iter:
@@ -582,6 +568,8 @@ def score_submission_on_workload(workload: spec.Workload,
         tuning_search_space[hi] = hyperparameters
 
       with profiler.profile('Train'):
+        if 'imagenet' not in workload_name:
+          imagenet_v2_data_dir = None
         timing, metrics = train_once(workload, workload_name,
                                      global_batch_size,
                                      global_eval_batch_size,
@@ -595,8 +583,8 @@ def score_submission_on_workload(workload: spec.Workload,
                                      max_global_steps,
                                      tuning_dir_name,
                                      save_checkpoints=save_checkpoints,)
-      all_timings[hi] = timing
-      all_metrics[hi] = metrics
+      all_timings.append(timing)
+      all_metrics.append(metrics)
       logging.info(f'Tuning trial {hi + 1}/{num_tuning_trials}')
       logging.info(f'Hyperparameters: {tuning_search_space[hi]}')
       logging.info(f'Metrics: {all_metrics[hi]}')
@@ -636,12 +624,6 @@ def main(_):
 
   if FLAGS.framework == 'pytorch':
     pytorch_init(USE_PYTORCH_DDP, RANK, profiler)
-
-  # TODO: remove once issue resolved.
-  if FLAGS.pytorch_eval_num_workers != 0:
-    logging.warning(
-        'WARNING: Setting pytorch_eval_num_workers != 0, will result '
-        'in incorrect evals currently, see issues/732.')
 
   workload_metadata = WORKLOADS[FLAGS.workload]
 
