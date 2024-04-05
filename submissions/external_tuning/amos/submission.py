@@ -97,18 +97,18 @@ def scale_by_amos(
 
       sqrt_k = np.sqrt(np.prod(theta.shape) / np.prod(g2.shape))
       tau = calc_tau(sqrt_k)
-      rho = (1 + 0.5 * tau) ** 2 - 1
-      l2p = 1 + l2 * rho**2
+      l2p = 1 + l2 * ((1 + 0.5 * tau) ** 2 - 1) ** 2
 
       b = flat_b[i]
       sqrt_1b = jnp.sqrt(1 + b)
       xi2_rsqrt1b = xi2 / (jnp.maximum(g2, sqrt_1b) if adaptive else sqrt_1b)
       flat_b[i] = b + xi2_rsqrt1b * ((g2 if adaptive else 1) / sqrt_k + b)
 
-      l2q = 1 + l2 * rho * b
+      l2q = 1 + l2 * b * b
       wd = -0.5 * xi2_rsqrt1b * (l2p / l2q * g2 + l2)
-      l2r = l2q / (1 + l2 / l2p * l2q)
       bv = (2 * sqrt_1b / (1 + jnp.sqrt(1 + 2 / (2 + tau) * sqrt_1b))) ** 2 - 1
+      l2r = (1 + l2 * b * bv) / (1 + l2 / l2p * l2q)
+
 
       eta = eta_fn(name, theta.shape)
       upd = (wd * theta - eta * xi * g) / (1 + eta * sqrt_1b * l2r * bv)
@@ -236,7 +236,7 @@ def adam_with_amos(
     # Apply Amos schedules.
     xi = learning_rate(count) if callable(learning_rate) else learning_rate
     amos_update_fn = scale_by_amos(xi, eta_fn, l2, adaptive=True).update
-    m2_correct = (1 + beta1) / (1 - beta1) / (1 - jnp.power(beta1, 2 * count))
+    m2_correct = (1 + beta1) / (1 - beta1)
     g2 = jax.tree_util.tree_map(
         lambda m, v, b: m2_correct
         * reduce_to_shape(jnp.square(m), b.shape)
@@ -405,6 +405,9 @@ class ShapeTuple:
   def __eq__(self, other):
     return self.shape_tuple == other.shape_tuple
 
+  def __hash__(self):
+    return hash(repr(self))
+
 
 def param_shapes(params):
   return jax.tree_map(lambda x: ShapeTuple(x.shape), flax.core.unfreeze(params))
@@ -435,6 +438,8 @@ def param_types(shapes, parent_name: str = '') -> Dict[str, ParameterType]:
   param_types_dict = {}
   for name, value in shapes.items():
     name = name.lower()
+    print('lowered name = ', name)
+
     if isinstance(value, dict):
       param_types_dict[name] = param_types(
           value, parent_name=parent_name + '/' + name)
@@ -651,16 +656,18 @@ def init_optimizer_state(workload: spec.Workload,
         raise ValueError('Unknown amos style: %s' % hyperparameters.style)
 
     print(amos_optimizer)
-    model_param_shapes = param_shapes(model_params)
+    unreplicated_params = jax_utils.unreplicate(model_params)
+
+    model_param_shapes = param_shapes(unreplicated_params)
     model_param_types = param_types(model_param_shapes)
 
     flattened_param_shapes = flax.traverse_util.flatten_dict(model_param_shapes, sep='/')
     flattened_params_types = flax.traverse_util.flatten_dict(model_param_types, sep='/')
 
-    print('shapes = ', flattened_param_shapes)
+    print('shapes = ', flattened_param_shapes.keys())
     print('\n')
 
-    print(flattened_params_types)
+    print('types = ', flattened_params_types.keys())
     
 
     shape_rules = {
@@ -682,6 +689,9 @@ def init_optimizer_state(workload: spec.Workload,
 
     def shape_fn(name, shape):
         name_str = '/'.join([str(x.key) for x in name]).lower()
+        print(name_str)
+        print(flattened_params_types[name_str])
+
         ret = shape_rules[flattened_params_types[name_str]]
         if isinstance(ret, str):
             ret = evaluate(ret, shape)
@@ -692,7 +702,7 @@ def init_optimizer_state(workload: spec.Workload,
     effective_steps = workload.step_hint - warmup * 2 / 3
     converge_factor = hyperparameters.converge
     converge_steps = converge_factor * effective_steps
-    calc_base_lr(max_k, converge_factor * effective_steps)
+    base_lr = calc_base_lr(max_k, converge_factor * effective_steps)
     lr_schedule = optax.linear_schedule(
         init_value=0.0,
         end_value=base_lr,
@@ -732,12 +742,6 @@ def init_optimizer_state(workload: spec.Workload,
         logging.info('eta %s: %s', name_str, ret)
         return ret
 
-    hps_eta_fn = hps.opt_hparams.get('eta_fn', None)
-    if hps_eta_fn is not None:
-        eta_fn = params_fn_from_assign_map(
-            dict(hps_eta_fn), eval_str_value=True
-        )
-
     l2 = hyperparameters.l2
 
     def global_clip_amos(learning_rate):
@@ -747,11 +751,14 @@ def init_optimizer_state(workload: spec.Workload,
                 learning_rate=learning_rate,
                 eta_fn=eta_fn,
                 shape_fn=shape_fn,
-                beta1=hyperparameters.get('beta1', 0.9),
-                beta2=hyperparameters.get('beta2', 0.995),
+                beta1=hyperparameters.beta1,
+                beta2=hyperparameters.beta2,
                 l2=l2,
             ),
         )
+
+    params_zeros_like = jax.tree_map(lambda s: jnp.zeros(s.shape_tuple),
+                                   workload.param_shapes)
 
     opt_init_fn, opt_update_fn = global_clip_amos(
         learning_rate=lr_schedule
